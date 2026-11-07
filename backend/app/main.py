@@ -181,19 +181,19 @@ def saved_scenarios(pid:str,u=Depends(current)):
  with Session() as db:owned(db,pid,u);return records(db,'scenario_result',u['id'],pid)
 
 class Alternative(BaseModel):
- style:str
+ style:str;confidence:float=Field(default=.95,ge=.9,le=.999);days:int=Field(default=756,ge=30,le=1260);simulations:int=Field(default=5000,ge=100,le=20000);seed:int=Field(default=42,ge=0,le=2147483647)
 @app.post('/api/portfolios/{pid}/counterfactual')
 def counterfactual(pid:str,c:Alternative,u=Depends(current)):
  targets={'Conservative':[.25,.55,.15,.05],'Balanced':[.5,.3,.1,.1],'Growth':[.75,.1,.05,.1]}
  if c.style not in targets:raise HTTPException(422,'Unknown allocation style')
- p=portfolio(pid,u);original=analytics(pid,u=u);hs=[dict(h) for h in p['holdings']];classes=['Equity','Bond','Commodity','Real Estate']
+ p=portfolio(pid,u);original=analytics(pid,c.confidence,c.days,c.simulations,c.seed,u);hs=[dict(h) for h in p['holdings']];classes=['Equity','Bond','Commodity','Real Estate']
  present=[a for a in classes if any(h['asset_class']==a for h in hs)]
  total=sum(targets[c.style][classes.index(a)] for a in present)
  allocation={a:targets[c.style][classes.index(a)]/total for a in present}
  for h in hs:
   count=sum(x['asset_class']==h['asset_class'] for x in hs)
   h['quantity']=original['value']*allocation[h['asset_class']]/count/h['current_price']
- return dict(metrics=calculate(hs),allocation=allocation,method='Explicit class target weights, equal weights within each class, normalized over available classes. Same 756-day history, seed 42; no optimization or trade execution.')
+ return dict(metrics=calculate(hs,c.confidence,c.days,c.simulations,c.seed),allocation=allocation,method=f'Explicit class target weights, equal weights within each class, normalized over available classes. Same {c.days}-day history, seed {c.seed}; no optimization or trade execution.')
 
 class OptimizationInput(BaseModel):
  minimum:float=Field(default=0,ge=0,le=1);maximum:float=Field(default=.25,gt=0,le=1);sector_cap:float=Field(default=.55,gt=0,le=1);target_return:float|None=Field(default=None,ge=-1,le=1);transaction_cost:float=Field(default=.001,ge=0,le=.1);risk_aversion:float=Field(default=5,gt=0,le=100);days:int=Field(default=756,ge=30,le=1260);seed:int=Field(default=42,ge=0,le=2147483647)
@@ -294,8 +294,8 @@ def chat(pid:str,q:Question,u=Depends(current)):
  else:answer=f"Composite risk score is {m['risk_score']}/100; annualized volatility is {m['volatility']:.1%}, maximum drawdown {m['max_drawdown']:.1%}, and concentration HHI {m['concentration']:.3f}. Open Explainability for asset contributions."
  return dict(answer=answer,provider='Deterministic evidence retrieval',evidence=dict(model=m['model_version'],seed=m['seed'],days=m['days']))
 @app.get('/api/portfolios/{pid}/export/{kind}')
-def export(pid:str,kind:str,u=Depends(current)):
- p=portfolio(pid,u);m=analytics(pid,u=u)
+def export(pid:str,kind:str,confidence:float=.95,days:int=756,simulations:int=5000,seed:int=42,u=Depends(current)):
+ p=portfolio(pid,u);m=analytics(pid,confidence,days,simulations,seed,u)
  if kind=='pdf':
   from reportlab.pdfgen import canvas
   from reportlab.lib.colors import HexColor
@@ -318,7 +318,7 @@ def export(pid:str,kind:str,u=Depends(current)):
    review_rows=db.query(Record).filter_by(kind='review',portfolio_id=pid).all()
    for r in review_rows:
     item=unpack(r);line(f"{item['recommendation']['title']}: {item['status']}")
-  line('METHODOLOGY',14);line('Daily simple returns; 252 trading days/year; arithmetic mean annualization.');line('VaR/CVaR are nonnegative one-day USD loss estimates. Confidence: 95%.');line('Synthetic one-factor model, seed 42; current holdings held at constant weights.');line('Composite: volatility 35%, drawdown 25%, concentration 25%, tail risk 15%.');line('No live pricing, predictive guarantee, trade execution or regulatory certification.');c.save();content=buf.getvalue();mime='application/pdf'
+  line('METHODOLOGY',14);line('Daily simple returns; 252 trading days/year; arithmetic mean annualization.');line(f'VaR/CVaR are nonnegative one-day USD loss estimates. Confidence: {confidence:.0%}.');line(f'Synthetic one-factor model, seed {seed}; {days} observations; constant current weights.');line('Composite: volatility 35%, drawdown 25%, concentration 25%, tail risk 15%.');line('No live pricing, predictive guarantee, trade execution or regulatory certification.');c.save();content=buf.getvalue();mime='application/pdf'
  else:
   buf=io.StringIO();w=csv.writer(buf)
   if kind=='holdings':

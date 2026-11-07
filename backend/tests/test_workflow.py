@@ -104,3 +104,47 @@ def test_constrained_optimizer(client):
  for sector in set(w['sector'] for w in weights):assert sum(w['proposed'] for w in weights if w['sector']==sector)<=.500001
  assert r.json()['status']=='Pending Review'
  assert client.post('/api/portfolios/demo-1/optimize',json=dict(maximum=.01)).status_code==422
+
+def test_all_workspace_actions_and_custom_settings(client):
+ client.cookies.clear()
+ pid='demo-2'
+ for path in ['/api/health','/api/scenarios','/api/settings','/api/audit','/api/reviews',f'/api/portfolios/{pid}',f'/api/portfolios/{pid}/holdings',f'/api/portfolios/{pid}/analyses',f'/api/portfolios/{pid}/recommendations']:
+  assert client.get(path).status_code==200,path
+ cfg=dict(confidence=.99,days=252,seed=17,simulations=1000)
+ metrics=client.get(f'/api/portfolios/{pid}/analytics',params=cfg).json()
+ alternate=client.post(f'/api/portfolios/{pid}/counterfactual',json=dict(style='Balanced',**cfg))
+ assert alternate.status_code==200
+ for k,v in cfg.items():assert alternate.json()['metrics'][k]==v
+ exported=client.get(f'/api/portfolios/{pid}/export/metrics',params=cfg)
+ assert exported.status_code==200
+ import csv,io
+ values=dict(csv.reader(io.StringIO(exported.text)))
+ assert float(values['historical_var'])==pytest.approx(metrics['historical_var'])
+ assert values['seed']=='17' and values['days']=='252'
+ for text in ['Explain risk','What is my VaR?','Explain returns']:
+  assert client.post(f'/api/portfolios/{pid}/chat',json=dict(question=text)).status_code==200
+ p=client.post('/api/portfolios',json=dict(name='Button flow test')).json();new_id=p['id']
+ assert client.put(f'/api/portfolios/{new_id}',json=dict(name='Renamed portfolio')).status_code==200
+ h=client.post(f'/api/portfolios/{new_id}/holdings',json=holdings()[0]).json()['holdings'][0]
+ assert client.put(f"/api/portfolios/{new_id}/holdings/{h['id']}",json=dict(holdings()[0],quantity=20)).status_code==200
+ text='ticker,name,asset_class,sector,quantity,purchase_price,current_price,currency\nAAPL,Apple,Equity,Technology,10,100,200,USD\n'
+ assert client.post(f'/api/portfolios/{new_id}/upload-csv',files={'file':('valid.csv',text)}).status_code==200
+ saved=client.get(f'/api/portfolios/{new_id}').json()
+ assert saved['holdings'][0]['current_price']==200
+ assert client.delete(f"/api/portfolios/{new_id}/holdings/{saved['holdings'][0]['id']}").status_code==200
+ assert client.delete(f'/api/portfolios/{new_id}').status_code==200
+
+def test_review_rejection_revision_and_security(client):
+ client.cookies.clear();a=client.post('/api/agents/run-analysis',json=dict(portfolio_id='demo-1')).json()
+ ids=[]
+ for r in a['recommendations']:
+  first=client.post(f"/api/recommendations/{r['id']}/submit-review").json()
+  again=client.post(f"/api/recommendations/{r['id']}/submit-review").json()
+  assert first['id']==again['id'];ids.append(first['id'])
+ client.post('/api/auth/login',json=dict(email='reviewer@aegis.demo',password='AegisReview2026!'))
+ for rid,status in zip(ids,['Rejected','Needs Revision']):
+  decision=client.post(f'/api/reviews/{rid}/decision',json=dict(status=status,comment='Automated fixture decision for test evidence.'))
+  assert decision.status_code==200 and decision.json()['status']==status
+ assert client.post('/api/settings',headers={'sec-fetch-site':'cross-site'},json={}).status_code==403
+ assert client.put('/api/portfolios/demo-1',json=dict(name='Unauthorized change')).status_code==403
+ client.cookies.clear()

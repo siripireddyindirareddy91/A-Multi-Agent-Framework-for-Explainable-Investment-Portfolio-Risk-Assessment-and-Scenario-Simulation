@@ -24,3 +24,11 @@ The test suite is backend/API integration coverage, not Playwright browser end-t
 - Shared sample portfolio writes are restricted to their owning demo account; other signed-in users can read samples and create/edit their own portfolios. Cross-site cookie mutations are rejected.
 - GitHub auto-link retried and still refused by Vercel due to GitHub App repository permissions. This account-level authorization remains unresolved; authenticated Git push and CLI deployment continue to work.
 - Remaining enterprise scope: fifteen fully normalized domain tables, durable resumable job/checkpoint execution, paid LLM/live market adapters, password recovery, tenant administration, browser automation coverage and independent security/financial model validation are not completed.
+
+## Website regression pass
+
+- Nine backend/API test groups pass, including all workspace service reads, portfolio/holding create-edit-delete, valid/invalid CSV uploads, review approval/rejection/revision, idempotent review submission, ownership and cross-site protections, login/logout, optimization and all report types.
+- Fixed exports and counterfactual comparisons ignoring the selected confidence, historical window, simulation count and seed. Regression tests compare exported VaR to the dashboard calculation under a non-default configuration.
+- Portfolio refresh now applies results atomically and discards superseded responses. Comparison components reset when switching portfolios/settings.
+- Production build and TypeScript checks pass. `scripts/smoke.py` provides live cookie-authenticated API checks for all ten workspace services and four downloads.
+- In-app browser navigation timed out again. No claim is made that every visible button was clicked, that visual layout was verified in this pass, or that browser-level coverage is complete.
