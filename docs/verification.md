@@ -9,5 +9,7 @@
 - Browser preview: in-app browser initialization timed out. Visual UI and click-through browser QA are not claimed. HTTP/API checks and the production build were completed.
 - PostgreSQL-specific integration was not run. Local tests use isolated file-backed SQLite. Hosted SQLite is temporary; no managed database credentials were available.
 - Vercel's automatic GitHub integration could not connect because its integration lacked repository write access. Direct Git push and CLI deployments use separate authentication.
+- Final deployment `dpl_3nx7xNgyeg45cBPHhe9eCdGusT4u`: **READY** at https://aegis-risk-intelligence.vercel.app. A live POST analysis returned eight agent statuses and two recommendations; a saved equity crash simulation returned a calculated 24.7787% loss; the live PDF endpoint returned HTTP 200, `application/pdf`, 3,771 bytes. A stable production JWT_SECRET was configured in Vercel.
+- Source was pushed to the requested GitHub repository on `main`, preserving its initial commit. GitHub auto-deployment integration remains disconnected; deployments were performed successfully through the authenticated Vercel CLI.
 
 The test suite is backend/API integration coverage, not Playwright browser end-to-end coverage or a regulatory/security certification.
