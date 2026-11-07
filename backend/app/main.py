@@ -12,6 +12,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import RetryPolicy
 from .engine import calculate, scenario, SCENARIOS, ASSETS
+from .optimization import optimize
 
 DB=os.getenv('DATABASE_URL', 'sqlite:////tmp/aegis.db' if os.getenv('VERCEL') else 'sqlite:///./aegis.db')
 if DB.startswith('postgres://'): DB=DB.replace('postgres://','postgresql+psycopg://',1)
@@ -28,6 +29,7 @@ class Record(Base):
 Base.metadata.create_all(engine)
 passwords=PasswordHash.recommended(); SECRET=os.getenv('JWT_SECRET') or secrets.token_hex(32)
 DEMO=os.getenv('DEMO_MODE','true').lower()=='true'
+REQUIRE_AUTH=os.getenv('REQUIRE_AUTH','false').lower()=='true'
 def put(db,kind,data,owner='demo',pid=None,rid=None):
  r=Record(id=rid or str(uuid.uuid4()),kind=kind,owner=owner,portfolio_id=pid,payload=json.dumps(data)); db.add(r);db.flush();return unpack(r)
 def unpack(r): return dict(json.loads(r.payload),id=r.id,created_at=r.created_at.isoformat() if r.created_at else None)
@@ -53,6 +55,7 @@ app.add_middleware(CORSMiddleware,allow_origins=os.getenv('CORS_ORIGINS','http:/
 limits={};lock=threading.Lock()
 @app.middleware('http')
 async def guard(request:Request,call_next):
+ if request.method in ['POST','PUT','DELETE'] and request.cookies.get('aegis_session') and request.headers.get('sec-fetch-site')=='cross-site':return Response('Cross-site request rejected',403)
  key=(request.client.host if request.client else 'unknown',int(time.time()//60))
  with lock:
   if len(limits)>10000: limits.clear()
@@ -61,8 +64,8 @@ async def guard(request:Request,call_next):
  if count>180:return Response('Rate limit exceeded',429)
  response=await call_next(request);response.headers['X-Content-Type-Options']='nosniff';response.headers['X-Frame-Options']='DENY';return response
 def current(request:Request):
- token=request.headers.get('Authorization','').removeprefix('Bearer ')
- if not token and DEMO:return dict(id='demo',role='analyst',name='Alex Morgan',email='analyst@aegis.demo')
+ token=request.headers.get('Authorization','').removeprefix('Bearer ') or request.cookies.get('aegis_session','')
+ if not token and DEMO and not REQUIRE_AUTH:return dict(id='demo',role='analyst',name='Alex Morgan',email='analyst@aegis.demo')
  try:
   payload=jwt.decode(token,SECRET,algorithms=['HS256'])
   with Session() as db:
@@ -70,9 +73,10 @@ def current(request:Request):
    if not u:raise ValueError()
    return dict(id=u.id,role=u.role,name=u.name,email=u.email)
  except Exception: raise HTTPException(401,'Session expired. Please sign in.')
-def owned(db,pid,u):
+def owned(db,pid,u,write=False):
  r=db.get(Record,pid)
  if not r or r.kind!='portfolio' or (r.owner!=u['id'] and not (DEMO and r.owner=='demo')):raise HTTPException(404,'Portfolio not found')
+ if write and r.owner!=u['id']:raise HTTPException(403,'Shared sample portfolios are read-only for this account. Create your own portfolio to edit.')
  return r,unpack(r)
 def audit(db,u,action,details):put(db,'audit',dict(actor=u['email'],action=action,details=details),u['id'])
 def save_payload(r,p):r.payload=json.dumps({k:v for k,v in p.items() if k not in ['id','created_at']});r.updated_at=datetime.datetime.utcnow()
@@ -94,17 +98,22 @@ class Shock(BaseModel):
 @app.get('/api/health')
 def health():return dict(status='ok',demo=DEMO,database='postgresql' if 'postgres' in DB else 'sqlite',durable=not bool(os.getenv('VERCEL')) or 'postgres' in DB)
 @app.post('/api/auth/register')
-def register(c:Credentials):
+def register(c:Credentials,response:Response):
  with Session.begin() as db:
   if db.query(User).filter_by(email=c.email.lower()).first():raise HTTPException(409,'Email already registered')
   uid=str(uuid.uuid4());db.add(User(id=uid,email=c.email.lower(),password=passwords.hash(c.password),role='analyst',name=c.name))
- return login(c)
+ return login(c,response)
 @app.post('/api/auth/login')
-def login(c:Credentials):
+def login(c:Credentials,response:Response):
  with Session() as db:
   u=db.query(User).filter_by(email=c.email.lower()).first()
   if not u or not passwords.verify(c.password,u.password):raise HTTPException(401,'Invalid email or password')
-  return dict(token=jwt.encode(dict(sub=u.id,exp=datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=8)),SECRET,algorithm='HS256'),user=dict(id=u.id,email=u.email,name=u.name,role=u.role))
+  token=jwt.encode(dict(sub=u.id,exp=datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=8)),SECRET,algorithm='HS256')
+  response.set_cookie('aegis_session',token,httponly=True,secure=bool(os.getenv('VERCEL')),samesite='strict',max_age=28800,path='/')
+  return dict(token=token,user=dict(id=u.id,email=u.email,name=u.name,role=u.role))
+@app.post('/api/auth/logout')
+def logout(response:Response):
+ response.delete_cookie('aegis_session',path='/');return dict(ok=True)
 @app.get('/api/auth/me')
 def me(u=Depends(current)):return u
 @app.get('/api/portfolios')
@@ -122,29 +131,29 @@ def portfolio(pid:str,u=Depends(current)):
 @app.put('/api/portfolios/{pid}')
 def update_portfolio(pid:str,p:PortfolioInput,u=Depends(current)):
  with Session.begin() as db:
-  r,data=owned(db,pid,u);data.update(p.model_dump());save_payload(r,data);audit(db,u,'Portfolio updated',pid);return data
+  r,data=owned(db,pid,u,write=True);data.update(p.model_dump());save_payload(r,data);audit(db,u,'Portfolio updated',pid);return data
 @app.delete('/api/portfolios/{pid}')
 def delete_portfolio(pid:str,u=Depends(current)):
- with Session.begin() as db:r,_=owned(db,pid,u);db.delete(r);audit(db,u,'Portfolio deleted',pid)
+ with Session.begin() as db:r,_=owned(db,pid,u,write=True);db.delete(r);audit(db,u,'Portfolio deleted',pid)
  return dict(ok=True)
 @app.get('/api/portfolios/{pid}/holdings')
 def holdings(pid:str,u=Depends(current)):return portfolio(pid,u)['holdings']
 @app.post('/api/portfolios/{pid}/holdings')
 def add_holding(pid:str,h:HoldingInput,u=Depends(current)):
  with Session.begin() as db:
-  r,p=owned(db,pid,u)
+  r,p=owned(db,pid,u,write=True)
   if len(p['holdings'])>=100:raise HTTPException(422,'Maximum 100 holdings')
   p['holdings'].append(dict(**validate_holding(h),id=str(uuid.uuid4())));save_payload(r,p);audit(db,u,'Holding added',h.ticker);return p
 @app.put('/api/portfolios/{pid}/holdings/{hid}')
 def edit_holding(pid:str,hid:str,h:HoldingInput,u=Depends(current)):
  with Session.begin() as db:
-  r,p=owned(db,pid,u)
+  r,p=owned(db,pid,u,write=True)
   if not any(x['id']==hid for x in p['holdings']):raise HTTPException(404,'Holding not found')
   p['holdings']=[dict(**validate_holding(h),id=hid) if x['id']==hid else x for x in p['holdings']];save_payload(r,p);audit(db,u,'Holding updated',hid);return p
 @app.delete('/api/portfolios/{pid}/holdings/{hid}')
 def remove_holding(pid:str,hid:str,u=Depends(current)):
  with Session.begin() as db:
-  r,p=owned(db,pid,u);p['holdings']=[x for x in p['holdings'] if x['id']!=hid];save_payload(r,p);audit(db,u,'Holding removed',hid);return p
+  r,p=owned(db,pid,u,write=True);p['holdings']=[x for x in p['holdings'] if x['id']!=hid];save_payload(r,p);audit(db,u,'Holding removed',hid);return p
 @app.post('/api/portfolios/{pid}/upload-csv')
 async def upload(pid:str,file:UploadFile=File(...),u=Depends(current)):
  raw=await file.read(1000001)
@@ -154,7 +163,7 @@ async def upload(pid:str,file:UploadFile=File(...),u=Depends(current)):
   if not rows or len(rows)>100:raise ValueError('CSV requires 1–100 holdings')
   hs=[dict(**validate_holding(HoldingInput(**r)),id=str(uuid.uuid4())) for r in rows]
  except Exception as e:raise HTTPException(422,'Invalid CSV. Required: ticker,name,asset_class,sector,quantity,purchase_price,current_price,currency (USD).') from e
- with Session.begin() as db:r,p=owned(db,pid,u);p['holdings']=hs;save_payload(r,p);audit(db,u,'CSV holdings replaced',pid)
+ with Session.begin() as db:r,p=owned(db,pid,u,write=True);p['holdings']=hs;save_payload(r,p);audit(db,u,'CSV holdings replaced',pid)
  return p
 @app.get('/api/portfolios/{pid}/analytics')
 def analytics(pid:str,confidence:float=.95,days:int=756,simulations:int=5000,seed:int=42,u=Depends(current)):
@@ -184,6 +193,15 @@ def counterfactual(pid:str,c:Alternative,u=Depends(current)):
   count=sum(x['asset_class']==h['asset_class'] for x in hs)
   h['quantity']=original['value']*allocation[h['asset_class']]/count/h['current_price']
  return dict(metrics=calculate(hs),allocation=allocation,method='Explicit class target weights, equal weights within each class, normalized over available classes. Same 756-day history, seed 42; no optimization or trade execution.')
+
+class OptimizationInput(BaseModel):
+ minimum:float=Field(default=0,ge=0,le=1);maximum:float=Field(default=.25,gt=0,le=1);sector_cap:float=Field(default=.55,gt=0,le=1);target_return:float|None=Field(default=None,ge=-1,le=1);transaction_cost:float=Field(default=.001,ge=0,le=.1);risk_aversion:float=Field(default=5,gt=0,le=100);days:int=Field(default=756,ge=30,le=1260);seed:int=Field(default=42,ge=0,le=2147483647)
+@app.post('/api/portfolios/{pid}/optimize')
+def optimization(pid:str,c:OptimizationInput,u=Depends(current)):
+ try:result=optimize(portfolio(pid,u)['holdings'],**c.model_dump())
+ except ValueError as e:raise HTTPException(422,str(e))
+ with Session.begin() as db:
+  saved=put(db,'optimization',result,u['id'],pid);audit(db,u,'Optimization simulated',saved['id']);return saved
 
 AGENTS=[('Portfolio Analysis','Allocation and concentration'),('Market Intelligence','Synthetic market regime and assumptions'),('Quantitative Risk','Validated deterministic risk metrics'),('Scenario Simulation','Seven economic stress scenarios'),('Explainability','Evidence-linked risk attribution'),('Recommendation','Constrained allocation alternatives'),('Human Review','Human decision gate'),('Report Generation','Consolidated analytical report')]
 def findings(metrics,hs):

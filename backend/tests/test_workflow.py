@@ -72,8 +72,31 @@ def test_crud_csv_auth_and_persistence(client):
  h=holdings()[0]
  assert client.post(f'/api/portfolios/{pid}/holdings',headers=headers,json=h).status_code==200
  saved=client.get(f'/api/portfolios/{pid}',headers=headers).json();assert saved['holdings'][0]['ticker']=='AAPL'
+ client.cookies.clear()
  assert client.get(f'/api/portfolios/{pid}').status_code==404
  assert client.post(f'/api/portfolios/{pid}/upload-csv',headers=headers,files={'file':('bad.csv',b'ticker,quantity\nAAPL,-2')}).status_code==422
  assert client.put('/api/settings',headers=headers,json=dict(simulations=1000,seed=7)).status_code==200
  assert client.get('/api/settings',headers=headers).json()['seed']==7
  assert client.delete(f'/api/portfolios/{pid}',headers=headers).status_code==200
+
+def test_required_cookie_authentication(client,monkeypatch):
+ monkeypatch.setattr(main,'REQUIRE_AUTH',True)
+ client.cookies.clear()
+ assert client.get('/api/portfolios').status_code==401
+ response=client.post('/api/auth/login',json=dict(email='analyst@aegis.demo',password='AegisDemo2026!'))
+ assert response.status_code==200
+ assert 'HttpOnly' in response.headers['set-cookie']
+ assert 'SameSite=strict' in response.headers['set-cookie']
+ assert client.get('/api/portfolios').status_code==200
+ assert client.post('/api/auth/logout').status_code==200
+ assert client.get('/api/portfolios').status_code==401
+ client.cookies.clear()
+
+def test_constrained_optimizer(client):
+ r=client.post('/api/portfolios/demo-1/optimize',json=dict(maximum=.2,sector_cap=.5))
+ assert r.status_code==200,r.text
+ weights=r.json()['weights'];assert sum(w['proposed'] for w in weights)==pytest.approx(1)
+ assert max(w['proposed'] for w in weights)<=.200001
+ for sector in set(w['sector'] for w in weights):assert sum(w['proposed'] for w in weights if w['sector']==sector)<=.500001
+ assert r.json()['status']=='Pending Review'
+ assert client.post('/api/portfolios/demo-1/optimize',json=dict(maximum=.01)).status_code==422

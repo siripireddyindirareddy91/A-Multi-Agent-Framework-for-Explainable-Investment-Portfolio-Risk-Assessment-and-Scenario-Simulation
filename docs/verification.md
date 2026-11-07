@@ -13,3 +13,14 @@
 - Source was pushed to the requested GitHub repository on `main`, preserving its initial commit. GitHub auto-deployment integration remains disconnected; deployments were performed successfully through the authenticated Vercel CLI.
 
 The test suite is backend/API integration coverage, not Playwright browser end-to-end coverage or a regulatory/security certification.
+
+## Enterprise follow-up
+
+- Free Neon PostgreSQL resource `aegis-production-db` provisioned in iad1 and connected to Vercel production. Live health reports `database=postgresql`, `durable=true`.
+- Production `REQUIRE_AUTH=true`; protected APIs require login. Cookie authentication verified live with the analyst account. Cookies are HttpOnly, SameSite=Strict and Secure on Vercel; logout clears the browser cookie.
+- Left navigation now scrolls independently with a fixed-height sidebar and thin visible scrollbar.
+- Constrained long-only SLSQP optimizer added, persisted and exposed in Recommendations. Live solver returned 12 positions with Pending Review status. Tests validate full investment, asset bounds, sector caps and infeasible inputs.
+- Seven backend test groups passed; production build passed. Alembic baseline upgrade passed locally.
+- Shared sample portfolio writes are restricted to their owning demo account; other signed-in users can read samples and create/edit their own portfolios. Cross-site cookie mutations are rejected.
+- GitHub auto-link retried and still refused by Vercel due to GitHub App repository permissions. This account-level authorization remains unresolved; authenticated Git push and CLI deployment continue to work.
+- Remaining enterprise scope: fifteen fully normalized domain tables, durable resumable job/checkpoint execution, paid LLM/live market adapters, password recovery, tenant administration, browser automation coverage and independent security/financial model validation are not completed.
