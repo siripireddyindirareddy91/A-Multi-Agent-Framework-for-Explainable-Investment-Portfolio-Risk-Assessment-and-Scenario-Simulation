@@ -82,12 +82,16 @@ def test_crud_csv_auth_and_persistence(client):
 def test_required_cookie_authentication(client,monkeypatch):
  monkeypatch.setattr(main,'REQUIRE_AUTH',True)
  client.cookies.clear()
- assert client.get('/api/portfolios').status_code==401
+ missing=client.get('/api/portfolios')
+ assert missing.status_code==401
+ assert 'expired' not in missing.json()['detail'].lower()
+ assert client.get('/api/portfolios',headers={'Authorization':'Bearer invalid-token'}).status_code==401
  response=client.post('/api/auth/login',json=dict(email='analyst@aegis.demo',password='AegisDemo2026!'))
  assert response.status_code==200
  assert 'HttpOnly' in response.headers['set-cookie']
  assert 'SameSite=strict' in response.headers['set-cookie']
  assert client.get('/api/portfolios').status_code==200
+ assert client.get('/api/auth/me').headers['cache-control']=='private, no-store'
  assert client.post('/api/auth/logout').status_code==200
  assert client.get('/api/portfolios').status_code==401
  client.cookies.clear()

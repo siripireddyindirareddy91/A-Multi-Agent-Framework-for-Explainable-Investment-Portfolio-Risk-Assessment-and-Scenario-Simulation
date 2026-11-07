@@ -62,10 +62,11 @@ async def guard(request:Request,call_next):
   limits[key]=limits.get(key,0)+1
   count=limits[key]
  if count>180:return Response('Rate limit exceeded',429)
- response=await call_next(request);response.headers['X-Content-Type-Options']='nosniff';response.headers['X-Frame-Options']='DENY';return response
+ response=await call_next(request);response.headers['X-Content-Type-Options']='nosniff';response.headers['X-Frame-Options']='DENY';response.headers['Cache-Control']='private, no-store';return response
 def current(request:Request):
  token=request.headers.get('Authorization','').removeprefix('Bearer ') or request.cookies.get('aegis_session','')
  if not token and DEMO and not REQUIRE_AUTH:return dict(id='demo',role='analyst',name='Alex Morgan',email='analyst@aegis.demo')
+ if not token:raise HTTPException(401,'Please sign in to open your workspace.')
  try:
   payload=jwt.decode(token,SECRET,algorithms=['HS256'])
   with Session() as db:
