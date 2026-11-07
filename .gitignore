@@ -1,0 +1,14 @@
+node_modules/
+.next/
+.vercel/
+.env
+.env.local
+*.db
+__pycache__/
+.pytest_cache/
+.venv/
+test-results/
+.github-source/
+*.tsbuildinfo
+
+.vercel
